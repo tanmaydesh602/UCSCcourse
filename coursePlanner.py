@@ -1,11 +1,6 @@
 from bs4 import BeautifulSoup
 import requests
-import re
-import textwrap
-url = "https://catalog.ucsc.edu/en/current/general-catalog/courses/"
-result = requests.get(url)
-doc = BeautifulSoup(result.text, "html.parser")
-course_links = [link["href"] for link in doc.find_all("ul", class_="sc-child-item-links")[0].find_all("a")]
+
 class Course:
     def __init__(self, code, name, description, credits, gen_ed, prerequisites):
         self.code = code
@@ -13,43 +8,44 @@ class Course:
         self.credits = credits
         self.gen_ed = gen_ed
 
+        # Remove non-breaking space (U+00A0) if present in description
+        description = description.replace(u'\xa0', ' ')
+        
         # Separate description from prerequisites if concatenated
-        description_text = description.decode('utf-8')
-        if "Prerequisite(s):" in description_text:
-            description_parts = description_text.split("Prerequisite(s):", 1)
-            self.description = description_parts[0].strip().encode('utf-8')
-            self.prerequisites = "Prerequisite(s): {}".format(description_parts[1].strip()).encode('utf-8')
+        if "Prerequisite(s):" in description:
+            description_parts = description.split("Prerequisite(s):", 1)
+            self.description = description_parts[0].strip()
+            self.prerequisites = "Prerequisite(s): {}".format(description_parts[1].strip())
         else:
-            self.description = description.encode('utf-8')
-            self.prerequisites = prerequisites.encode('utf-8') if prerequisites else None
+            self.description = description
+            self.prerequisites = prerequisites if prerequisites else None
     
     def __str__(self):
         course_info = "Code: {}\n".format(self.code)
         course_info += "Name: {}\n".format(self.name)
-        
-        # Decode description from UTF-8
-        description_decoded = self.description.decode('utf-8')
-        # Encode description to UTF-8 again
-        description_encoded = description_decoded.encode('utf-8')
-        course_info += "Description: {}\n".format(description_encoded)
-        
+        course_info += "Description: {}\n".format(self.description)
         course_info += "Credits: {}\n".format(self.credits)
-        
         if self.gen_ed:
-            # Encode gen_ed to UTF-8
-            gen_ed_encoded = self.gen_ed.encode('utf-8')
-            course_info += "General Education Code: {}\n".format(gen_ed_encoded)
-        
+            course_info += "General Education Code: {}\n".format(self.gen_ed)
         if self.prerequisites:
-            # Encode prerequisites to UTF-8
-            prerequisites_encoded = self.prerequisites.encode('utf-8')
-            # Check if prerequisites start with 'Prerequisite(s):'
-            if prerequisites_encoded.startswith(b"Prerequisite(s):"):
-                prerequisites_encoded = prerequisites_encoded.replace(b"Prerequisite(s):", b"", 1).strip()
-            course_info += "Prerequisite(s): {}\n".format(prerequisites_encoded)
-        
+            course_info += "{}\n".format(self.prerequisites)
         return course_info
-    
+
+def print_course_info(course_list, course_code):
+    found = False
+    for course in course_list:
+        if course.code == course_code:
+            print(course)
+            found = True
+            break
+    if not found:
+        print("Course not found.")
+
+url = "https://catalog.ucsc.edu/en/current/general-catalog/courses/"
+result = requests.get(url)
+doc = BeautifulSoup(result.text, "html.parser")
+course_links = [link["href"] for link in doc.find_all("ul", class_="sc-child-item-links")[0].find_all("a")]
+
 course_list = []
 for link in course_links:
     course_url = "https://catalog.ucsc.edu{}".format(link)
@@ -69,8 +65,8 @@ for link in course_links:
             description = desc_element.get_text().strip()
 
         code = str(code)
-        name = name.encode('utf-8')
-        description = description.encode('utf-8')
+        name = name
+        description = description
         description = '\n'.join(line.lstrip() for line in description.splitlines())
 
         credit_element = entry.find_next_sibling('div', class_='sc-credithours')
@@ -100,20 +96,10 @@ for link in course_links:
         tempcourse = Course(code, name, description, credit, gen_ed, prerequisite)
         course_list.append(tempcourse)
 
-def print_course_info(course_list, course_code):
-    found = False
-    for course in course_list:
-        if course.code == course_code:
-            print(course)
-            found = True
-            break
-    
-    if not found:
-        print("Course not found.")
-
 # Assuming 'courses' is the list containing Course objects
-# Let's say you want to print the information for course code 'CSE 3'
-print_course_info(course_list, 'CMMU 102')
+# Let's say you want to print the information for course code 'CMMU 102'
+print_course_info(course_list, 'CSE 12')
+
 
 
     

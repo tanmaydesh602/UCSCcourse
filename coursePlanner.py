@@ -2,6 +2,10 @@ import requests
 from bs4 import BeautifulSoup
 import pickle
 import os.path
+import networkx as nx
+import matplotlib.pyplot as plt
+import re
+
 
 # Define the Course class
 class Course:
@@ -12,41 +16,9 @@ class Course:
         self.credits = credits
         self.gen_ed = gen_ed
         self.prerequisites = prerequisites
+
     def __str__(self):
-        course_info = "Code: {}\n".format(self.code)
-        course_info += "Name: {}\n".format(self.name)
-
-        # Encode description, ignoring non-ASCII characters
-        try:
-            description_encoded = self.description.encode('ascii', 'ignore')
-            course_info += "Description: {}\n".format(description_encoded)
-        except UnicodeEncodeError:
-            course_info += "Description: <Description contains non-ASCII characters>\n"
-
-        course_info += "Credits: {}\n".format(self.credits)
-        if self.gen_ed:
-            gen_ed_encoded = self.gen_ed.encode('ascii', 'ignore')
-            course_info += "General Education Code: {}\n".format(gen_ed_encoded)
-        if self.prerequisites:
-            prerequisites_encoded = self.prerequisites.encode('ascii', 'ignore')
-            # Check if prerequisites already start with "Prerequisite(s):"
-            if not prerequisites_encoded.startswith(b"Prerequisite(s):"):
-                prerequisites_encoded = b"Prerequisite(s): " + prerequisites_encoded
-            course_info += "{}\n".format(prerequisites_encoded.decode('ascii', 'ignore'))
-        return course_info
-
-
-
-# Define the print_course_info function
-def print_course_info(course_list, course_code):
-    found = False
-    for course in course_list:
-        if course.code == course_code:
-            print(course)
-            found = True
-            break
-    if not found:
-        print("Course not found.")
+        return self.code
 
 # Define the scrape_course_info function
 def scrape_course_info():
@@ -56,6 +28,8 @@ def scrape_course_info():
     course_links = [link["href"] for link in doc.find_all("ul", class_="sc-child-item-links")[0].find_all("a")]
 
     course_list = []
+    prerequisites_map = {}  # Dictionary to store prerequisites for each course
+
     for link in course_links:
         course_url = "https://catalog.ucsc.edu{}".format(link)
         course_response = requests.get(course_url)
@@ -85,7 +59,7 @@ def scrape_course_info():
             next_course = entry.find_next_sibling("h2", class_="course-name")
 
             gen_ed = None
-            prerequisite = None
+            prerequisites = {}
             current_sibling = entry.find_next_sibling()
 
             while current_sibling and current_sibling != next_course:
@@ -95,42 +69,74 @@ def scrape_course_info():
                         gen_ed = current_sibling.find('p').get_text().strip()
                     elif div_class == ['extraFields']:
                         req_heading = current_sibling.find('h4')
-                        if req_heading and req_heading.get_text().strip() == 'Requirements':
-                            prerequisite = current_sibling.find('p').get_text().strip()
-                if gen_ed and prerequisite:
-                    break
+                        if req_heading:
+                            req_type = req_heading.get_text().strip()
+                            req_content = current_sibling.find('p').get_text().strip().split(';')
+                            prerequisites[req_type] = [req.strip() for req in req_content]
                 current_sibling = current_sibling.find_next_sibling()
 
             # Create a Course instance and add it to the list of course attributes
-            tempcourse = Course(code, name, description, credit, gen_ed, prerequisite)
+            tempcourse = Course(code, name, description, credit, gen_ed, prerequisites)
             course_list.append(tempcourse)
-    
-    # Save the course list to a file
+
+            # Store prerequisites in the prerequisites map
+            prerequisites_map[code] = prerequisites
+
+    # Save the course list and prerequisites map to files
     with open('course_list.pkl', 'wb') as f:
         pickle.dump(course_list, f)
+    with open('prerequisites_map.pkl', 'wb') as f:
+        pickle.dump(prerequisites_map, f)
 
-    return course_list
+    return course_list, prerequisites_map
 
 # Define the load_course_info function
 def load_course_info():
-    if os.path.exists('course_list.pkl'):
-        with open('course_list.pkl', 'rb') as f:
-            return pickle.load(f)
+    if os.path.exists('course_list.pkl') and os.path.exists('prerequisites_map.pkl'):
+        with open('course_list.pkl', 'rb') as f1, open('prerequisites_map.pkl', 'rb') as f2:
+            return pickle.load(f1), pickle.load(f2)
     else:
         return scrape_course_info()
 
-# Assuming 'courses' is the list containing Course objects
-# Let's say you want to print the information for course code 'CMMU 102'
+# Define a function to create a graph from course prerequisites
+def create_course_graph(course_code, prerequisites_map):
+    G = nx.DiGraph()
 
-def print_courses_by_code(course_list, course_code_prefix):
-    found = False
-    for course in course_list:
-        if course.code.startswith(course_code_prefix):
-            print(course)
-            found = True
-    
-    if not found:
-        print("No courses found with the course code prefix '{}'".format(course_code_prefix))
+    # Recursively add prerequisites and their connections
+    def add_prerequisites(course_code, visited=set()):
+        if course_code not in prerequisites_map or course_code in visited:
+            return
+        visited.add(course_code)
+        if isinstance(prerequisites_map[course_code], list):
+            prereq_courses = prerequisites_map[course_code]
+            for prereq_course in prereq_courses:
+                # Remove any additional text from the course code
+                prereq_course_code = re.findall(r'[A-Z]+\s\d+', prereq_course)[0]
+                G.add_edge(prereq_course_code, course_code)  # Add edge from prerequisite to the course
+                add_prerequisites(prereq_course_code, visited)  # Recursively add prerequisites
+        else:
+            for prereq_type, prereq_courses in prerequisites_map[course_code].items():
+                for prereq_course in prereq_courses:
+                    # Remove any additional text from the course code
+                    prereq_course_code = re.findall(r'[A-Z]+\s\d+', prereq_course)[0]
+                    G.add_edge(prereq_course_code, course_code)  # Add edge from prerequisite to the course
+                    add_prerequisites(prereq_course_code, visited)  # Recursively add prerequisites
 
-course_list = load_course_info()
-print_courses_by_code(course_list, 'CSE')
+    add_prerequisites(course_code)
+    return G
+
+# Load course information and prerequisites map
+course_list, prerequisites_map = load_course_info()
+
+# Specify the course code you want to visualize
+course_code = 'CSE 101'
+
+# Create a graph for the specified course and its prerequisites
+course_graph = create_course_graph(course_code, prerequisites_map)
+
+# Draw the graph
+plt.figure(figsize=(10, 6))
+pos = nx.spring_layout(course_graph)  # Layout for better visualization
+nx.draw(course_graph, pos, with_labels=True, node_size=1500, node_color='skyblue', font_size=10, font_weight='bold', arrowsize=20)
+plt.title("Course Prerequisites Graph for {}".format(course_code))
+plt.show()
